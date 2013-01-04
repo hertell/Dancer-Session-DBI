@@ -57,6 +57,30 @@ server-side as well as client-side.
 This session engine will not automagically remove expired sessions on the server, but with a timestamp
 field as above, you should be able to to do this.
 
+=head2 PostgreSQL
+
+If using PostgreSQL, then you need to create the following rule:
+
+    CREATE RULE "replace_sessions" AS
+        ON INSERT TO "sessions"
+        WHERE
+          EXISTS(SELECT 1 FROM sessions WHERE id=NEW.id)
+        DO INSTEAD
+           (UPDATE sessions SET session_data=NEW.session_data WHERE id=NEW.id)
+
+You need also set the appropiate DSN (DBI:Pg:database=MyPostgresDb;host=localhost;port=5432). For the 
+last_active timestamp field, then create a field that looks like this:
+
+    last_active timestamp with time zone NOT NULL DEFAULT now()
+
+For updating the last_active-field, you need to create the following trigger
+
+    CREATE TRIGGER t_last_active
+      BEFORE UPDATE
+      ON sessions
+      FOR EACH ROW
+      EXECUTE PROCEDURE update_timestamp();
+
 =cut
 
 use strict;
@@ -102,7 +126,7 @@ sub flush {
     # without race-conditions. So we will have to check what database driver
     # we are using, and issue the appropriate syntax. Eventually. TODO
     given(lc $self->_dbh->{Driver}{Name}) {
-     	when ('mysql') { 
+        when ('mysql') { 
             my $sth = $self->_dbh->prepare_cached(qq{
                 INSERT INTO $quoted_table (id, session_data)
                 VALUES (?, ?)
@@ -121,10 +145,20 @@ sub flush {
             });
 
             $sth->execute($self->id, $self->id, $self->_serialize);
-            $sth->finish();        
+            $sth->finish();
         }
 
-     	default {
+        when ('pg') { 
+            my $sth = $self->_dbh->prepare_cached(qq{
+                INSERT INTO $quoted_table (id, session_data)
+                VALUES (?, ?)
+            });
+
+            $sth->execute($self->id, $self->_serialize);
+            $sth->finish();
+        }
+
+        default {
             die "MySQL and SQLite are the only currently supported databases";
         }
     }
